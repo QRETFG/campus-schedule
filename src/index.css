@@ -1,0 +1,24 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, -apple-system, 'Segoe UI',
+    sans-serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+  font-family: var(--font-sans);
+}
+
+/* 触屏上禁止周课表横向滚动时产生页面级回弹 */
+.scroll-x {
+  overscroll-behavior-x: contain;
+}
+
+:focus-visible {
+  @apply outline-2 outline-offset-2 outline-indigo-600;
+}
