@@ -399,9 +399,10 @@ describe('A13 备份恢复', () => {
     const backup = buildBackup(full())
     const parsed = parseBackup(JSON.stringify(backup))
     expect(parsed.ok).toBe(true)
-    expect(parsed.summary).toEqual({ semesterName: full().semester.name, courseCount: 1, slotCount: 1, changeCount: 2 })
-    expect(parsed.backup!.data.slots[0].weeks).toEqual([1, 3, 5, 7, 9, 11, 13, 15])
-    expect(names(parsed.backup!.data, FIRST_MONDAY)).toEqual([]) // 停课记录一并恢复
+    expect(parsed.summary).toEqual({ semesterName: full().semester.name, semesterCount: 1, courseCount: 1, slotCount: 1, changeCount: 2 })
+    const restored = parsed.backup!.data.semesters[0]
+    expect(restored.slots[0].weeks).toEqual([1, 3, 5, 7, 9, 11, 13, 15])
+    expect(names(restored, FIRST_MONDAY)).toEqual([]) // 停课记录一并恢复
   })
 
   it('无效文件被拒绝且带出原因', () => {
@@ -410,11 +411,11 @@ describe('A13 备份恢复', () => {
     expect(parseBackup('{"formatVersion":99,"data":{}}').error).toContain('高于当前支持')
 
     const broken = buildBackup(full())
-    broken.data.slots[0].courseId = '不存在的课程'
+    broken.data.semesters[0].slots[0].courseId = '不存在的课程'
     expect(parseBackup(JSON.stringify(broken)).error).toContain('找不到对应课程')
 
     const badPeriods = buildBackup(full())
-    badPeriods.data.periods[0] = { period: 1, start: '10:00', end: '08:00' }
+    badPeriods.data.semesters[0].periods[0] = { period: 1, start: '10:00', end: '08:00' }
     expect(parseBackup(JSON.stringify(badPeriods)).error).toContain('开始时间必须早于结束时间')
   })
 })

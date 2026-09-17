@@ -74,8 +74,8 @@ describe('备份兼容', () => {
     }
     const parsed = parseBackup(JSON.stringify(legacy))
     expect(parsed.ok).toBe(true)
-    expect(parsed.backup!.data.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(parsed.backup!.data.slots[0].rule).toEqual({ kind: 'odd', from: 1, to: 15 })
+    expect(parsed.backup!.data.semesters[0].schemaVersion).toBe(SCHEMA_VERSION)
+    expect(parsed.backup!.data.semesters[0].slots[0].rule).toEqual({ kind: 'odd', from: 1, to: 15 })
     expect(parsed.summary).toMatchObject({ courseCount: 1, slotCount: 1, changeCount: 2 })
   })
 
@@ -92,12 +92,12 @@ describe('备份兼容', () => {
 
     const backup = buildBackup(data)
     expect(backup.formatVersion).toBe(BACKUP_FORMAT_VERSION)
-    expect(backup.data.lastBatch).toBeUndefined()
-    expect(backup.data.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(backup.data.semesters[0].lastBatch).toBeUndefined()
+    expect(backup.data.semesters[0].schemaVersion).toBe(SCHEMA_VERSION)
 
     const roundTrip = parseBackup(JSON.stringify(backup))
     expect(roundTrip.ok).toBe(true)
-    expect(roundTrip.backup!.data.slots[0].weeks).toHaveLength(TOTAL_WEEKS)
+    expect(roundTrip.backup!.data.semesters[0].slots[0].weeks).toHaveLength(TOTAL_WEEKS)
   })
 
   it('高于当前支持的格式版本被拒绝，不覆盖旧课表', () => {

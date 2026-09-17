@@ -1,18 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { AppData, DateStr, TimeStr } from '../types'
+import type { AppData, DateStr, ScheduleWorkspace, TimeStr } from '../types'
 import { TIMEZONE, clockIn, todayIn } from '../core/datetime'
 import {
   StorageError,
-  clearData,
+  clearWorkspace,
   isStorageAvailable,
-  loadData,
+  loadActiveSemesterId,
   loadSyncMetadata,
+  loadWorkspace,
   markSyncComplete,
   markSyncPending,
-  saveData,
+  saveActiveSemesterId,
+  saveWorkspace,
 } from './storage'
 import { ScheduleSyncError, readRemoteSchedule, writeRemoteSchedule } from './remote'
+import { createWorkspace, defaultSemesterId } from './workspace'
 
 export type ScheduleSyncState = 'connecting' | 'saving' | 'synced' | 'offline'
 
@@ -25,6 +28,9 @@ export interface ScheduleSyncInfo {
 interface AppStoreValue {
   /** undefined 表示本浏览器尚未创建课表。 */
   data?: AppData
+  /** 需要同步和备份的全部学期。 */
+  workspace?: ScheduleWorkspace
+  activeSemesterId?: string
   storageAvailable: boolean
   /** 最近一次保存失败的信息；非空时页面必须提示未保存。 */
   saveError?: string
@@ -34,6 +40,10 @@ interface AppStoreValue {
   /** 写入并持久化；返回是否成功。失败时内存中的数据仍然更新，避免用户丢失正在编辑的内容。 */
   commit: (next: AppData) => boolean
   update: (fn: (current: AppData) => AppData) => boolean
+  addSemester: (next: AppData) => boolean
+  switchSemester: (semesterId: string) => boolean
+  removeSemester: (semesterId: string) => boolean
+  replaceWorkspace: (next: ScheduleWorkspace) => boolean
   reset: () => void
   dismissSaveError: () => void
 }
@@ -41,26 +51,46 @@ interface AppStoreValue {
 const AppStoreContext = createContext<AppStoreValue | undefined>(undefined)
 
 export function AppStoreProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<AppData | undefined>(() => loadData())
+  const [initialWorkspace] = useState(loadWorkspace)
+  const [workspace, setWorkspace] = useState<ScheduleWorkspace | undefined>(initialWorkspace)
+  const [activeSemesterId, setActiveSemesterId] = useState<string | undefined>(() => {
+    if (!initialWorkspace) return undefined
+    const saved = loadActiveSemesterId()
+    return saved && initialWorkspace.semesters.some((item) => item.semester.id === saved)
+      ? saved
+      : defaultSemesterId(initialWorkspace)
+  })
   const [saveError, setSaveError] = useState<string | undefined>()
   const [sync, setSync] = useState<ScheduleSyncInfo>({ state: 'connecting' })
   const [initialSyncMetadata] = useState(loadSyncMetadata)
   const storageAvailable = useMemo(() => isStorageAvailable(), [])
 
-  const dataRef = useRef(data)
-  dataRef.current = data
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
+  const activeSemesterIdRef = useRef(activeSemesterId)
+  activeSemesterIdRef.current = activeSemesterId
+  const data = workspace?.semesters.find((item) => item.semester.id === activeSemesterId)
   const revisionRef = useRef<number | undefined>(initialSyncMetadata.revision)
-  const pendingRef = useRef<{ data: AppData | null } | undefined>(
-    initialSyncMetadata.pending ? { data: data ?? null } : undefined,
+  const pendingRef = useRef<{ data: ScheduleWorkspace | null } | undefined>(
+    initialSyncMetadata.pending ? { data: initialWorkspace ?? null } : undefined,
   )
   const inFlightRef = useRef<Promise<void> | undefined>()
 
-  const applyRemote = useCallback((next: AppData | null) => {
-    dataRef.current = next ?? undefined
-    setData(next ?? undefined)
+  const applyRemote = useCallback((next: ScheduleWorkspace | null) => {
+    workspaceRef.current = next ?? undefined
+    setWorkspace(next ?? undefined)
+    const currentId = activeSemesterIdRef.current
+    const nextActiveId = next
+      ? currentId && next.semesters.some((item) => item.semester.id === currentId)
+        ? currentId
+        : defaultSemesterId(next)
+      : undefined
+    activeSemesterIdRef.current = nextActiveId
+    setActiveSemesterId(nextActiveId)
+    if (nextActiveId) saveActiveSemesterId(nextActiveId)
     try {
-      if (next) saveData(next)
-      else clearData()
+      if (next) saveWorkspace(next)
+      else clearWorkspace()
       setSaveError(undefined)
     } catch (error) {
       setSaveError(error instanceof StorageError ? error.message : '云端课表已读取，但无法保存本机副本。')
@@ -103,7 +133,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
           if (remote.revision === 0) {
             // 全新服务器以当前设备的本地课表完成首次初始化。
-            const local = dataRef.current
+            const local = workspaceRef.current
             if (local) {
               pendingRef.current = { data: local }
               continue
@@ -134,18 +164,21 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     return inFlightRef.current
   }, [applyRemote])
 
-  const queueRemoteWrite = useCallback((next: AppData | null) => {
+  const queueRemoteWrite = useCallback((next: ScheduleWorkspace | null) => {
     pendingRef.current = { data: next }
     markSyncPending(revisionRef.current)
     void synchronize()
   }, [synchronize])
 
-  const commit = useCallback((next: AppData) => {
-    dataRef.current = next
-    setData(next)
+  const saveLocalWorkspace = useCallback((next: ScheduleWorkspace, nextActiveId: string): boolean => {
+    workspaceRef.current = next
+    activeSemesterIdRef.current = nextActiveId
+    setWorkspace(next)
+    setActiveSemesterId(nextActiveId)
+    saveActiveSemesterId(nextActiveId)
     queueRemoteWrite(next)
     try {
-      saveData(next)
+      saveWorkspace(next)
       setSaveError(undefined)
       return true
     } catch (error) {
@@ -154,19 +187,77 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     }
   }, [queueRemoteWrite])
 
+  const commit = useCallback((next: AppData) => {
+    const current = workspaceRef.current
+    if (!current) return saveLocalWorkspace(createWorkspace(next), next.semester.id)
+
+    const activeId = activeSemesterIdRef.current
+    const index = current.semesters.findIndex((item) => item.semester.id === activeId)
+    const semesters = index < 0
+      ? [...current.semesters, next]
+      : current.semesters.map((item, itemIndex) => itemIndex === index ? next : item)
+    return saveLocalWorkspace({ ...current, semesters }, next.semester.id)
+  }, [saveLocalWorkspace])
+
   const update = useCallback(
     (fn: (current: AppData) => AppData) => {
-      const current = dataRef.current
+      const currentWorkspace = workspaceRef.current
+      const current = currentWorkspace?.semesters.find(
+        (item) => item.semester.id === activeSemesterIdRef.current,
+      )
       if (!current) return false
       return commit(fn(current))
     },
     [commit],
   )
 
+  const addSemester = useCallback((next: AppData) => {
+    const current = workspaceRef.current
+    if (!current) return saveLocalWorkspace(createWorkspace(next), next.semester.id)
+    if (current.semesters.some((item) => item.semester.id === next.semester.id)) {
+      setSaveError('新学期标识与已有学期重复，请重新创建。')
+      return false
+    }
+    return saveLocalWorkspace(
+      { ...current, semesters: [...current.semesters, next] },
+      next.semester.id,
+    )
+  }, [saveLocalWorkspace])
+
+  const switchSemester = useCallback((semesterId: string) => {
+    const current = workspaceRef.current
+    if (!current?.semesters.some((item) => item.semester.id === semesterId)) return false
+    activeSemesterIdRef.current = semesterId
+    setActiveSemesterId(semesterId)
+    saveActiveSemesterId(semesterId)
+    return true
+  }, [])
+
+  const removeSemester = useCallback((semesterId: string) => {
+    const current = workspaceRef.current
+    if (!current || current.semesters.length <= 1) return false
+    const semesters = current.semesters.filter((item) => item.semester.id !== semesterId)
+    if (semesters.length === current.semesters.length) return false
+    const reduced = { ...current, semesters }
+    const currentActive = activeSemesterIdRef.current
+    const nextActive = currentActive !== semesterId && semesters.some((item) => item.semester.id === currentActive)
+      ? currentActive!
+      : defaultSemesterId(reduced)!
+    return saveLocalWorkspace(reduced, nextActive)
+  }, [saveLocalWorkspace])
+
+  const replaceWorkspace = useCallback((next: ScheduleWorkspace) => {
+    const nextActive = defaultSemesterId(next)
+    if (!nextActive) return false
+    return saveLocalWorkspace(next, nextActive)
+  }, [saveLocalWorkspace])
+
   const reset = useCallback(() => {
-    clearData()
-    dataRef.current = undefined
-    setData(undefined)
+    clearWorkspace()
+    workspaceRef.current = undefined
+    activeSemesterIdRef.current = undefined
+    setWorkspace(undefined)
+    setActiveSemesterId(undefined)
     setSaveError(undefined)
     queueRemoteWrite(null)
   }, [queueRemoteWrite])
@@ -190,16 +281,22 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AppStoreValue>(
     () => ({
       data,
+      workspace,
+      activeSemesterId,
       storageAvailable,
       saveError,
       sync,
       syncNow: () => void synchronize(),
       commit,
       update,
+      addSemester,
+      switchSemester,
+      removeSemester,
+      replaceWorkspace,
       reset,
       dismissSaveError: () => setSaveError(undefined),
     }),
-    [data, storageAvailable, saveError, sync, synchronize, commit, update, reset],
+    [data, workspace, activeSemesterId, storageAvailable, saveError, sync, synchronize, commit, update, addSemester, switchSemester, removeSemester, replaceWorkspace, reset],
   )
 
   return <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>

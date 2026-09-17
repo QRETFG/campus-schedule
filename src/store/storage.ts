@@ -1,12 +1,13 @@
-import type { AppData, Backup } from '../types'
-import { BACKUP_FORMAT_VERSION, SCHEMA_VERSION } from '../types'
-import { migrateData } from './migrate'
-import { validateData } from './validate'
+import type { AppData, Backup, ScheduleWorkspace } from '../types'
+import { BACKUP_FORMAT_VERSION, SCHEMA_VERSION, WORKSPACE_VERSION } from '../types'
+import { validateWorkspace } from './validate'
 import { createInitialAppData } from './seed'
+import { createWorkspace, defaultSemesterId, isWorkspace, migrateWorkspace } from './workspace'
 
 const STORAGE_KEY = 'smart-schedule.v1'
 const INITIALIZED_KEY = 'smart-schedule.initialized.v1'
 const SYNC_META_KEY = 'smart-schedule.sync.v1'
+const ACTIVE_SEMESTER_KEY = 'smart-schedule.active-semester.v1'
 
 export interface LocalSyncMetadata {
   revision?: number
@@ -15,8 +16,8 @@ export interface LocalSyncMetadata {
 
 export class StorageError extends Error {}
 
-/** 读取本地课表；数据损坏时不抛出，交由调用方走空状态。 */
-export function loadData(): AppData | undefined {
+/** 读取本地全部学期；旧版单学期数据会在内存中自动升级。 */
+export function loadWorkspace(): ScheduleWorkspace | undefined {
   let raw: string | null = null
   let initialized = false
   try {
@@ -24,13 +25,13 @@ export function loadData(): AppData | undefined {
     initialized = window.localStorage.getItem(INITIALIZED_KEY) === '1'
   } catch {
     // 即使浏览器禁用了持久化，当前会话仍可使用默认课表。
-    return createInitialAppData()
+    return createWorkspace(createInitialAppData())
   }
   if (!raw) {
     if (initialized) return undefined
-    const initial = createInitialAppData()
+    const initial = createWorkspace(createInitialAppData())
     try {
-      saveData(initial)
+      saveWorkspace(initial)
     } catch {
       // AppStore 会另行提示存储不可用；默认课表仍可在内存中使用。
     }
@@ -38,9 +39,9 @@ export function loadData(): AppData | undefined {
   }
   try {
     const parsed = JSON.parse(raw)
-    if (validateData(parsed)) return undefined
-    // 旧版本写入的数据在这里补齐新增字段后再交给页面使用。
-    const migrated = migrateData(parsed as AppData)
+    if (validateWorkspace(parsed)) return undefined
+    // 旧版的单学期数据和学期内部旧字段都在这里升级。
+    const migrated = migrateWorkspace(parsed as AppData | ScheduleWorkspace)
     markInitialized()
     return migrated
   } catch {
@@ -49,9 +50,12 @@ export function loadData(): AppData | undefined {
 }
 
 /** 保存失败时抛出，页面必须明确提示未保存（§8.1）。 */
-export function saveData(data: AppData): void {
+export function saveWorkspace(workspace: ScheduleWorkspace): void {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...data, schemaVersion: SCHEMA_VERSION }))
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      workspaceVersion: WORKSPACE_VERSION,
+      semesters: workspace.semesters.map((data) => ({ ...data, schemaVersion: SCHEMA_VERSION })),
+    }))
     markInitialized()
   } catch (error) {
     const reason =
@@ -62,14 +66,51 @@ export function saveData(data: AppData): void {
   }
 }
 
-export function clearData(): void {
+export function clearWorkspace(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY)
+    window.localStorage.removeItem(ACTIVE_SEMESTER_KEY)
     // 保留初始化标记：用户主动清空后不应在下次刷新时重新灌入默认课表。
     markInitialized()
   } catch {
     // 清除失败不影响当前页面继续使用。
   }
+}
+
+export function loadActiveSemesterId(): string | undefined {
+  try {
+    return window.localStorage.getItem(ACTIVE_SEMESTER_KEY) ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function saveActiveSemesterId(id: string): void {
+  try {
+    window.localStorage.setItem(ACTIVE_SEMESTER_KEY, id)
+  } catch {
+    // 当前会话仍然可以切换；刷新后回到日期最接近的学期。
+  }
+}
+
+/** 以下三个单学期接口保留给旧调用方和数据兼容测试。 */
+export function loadData(): AppData | undefined {
+  const workspace = loadWorkspace()
+  if (!workspace) return undefined
+  const preferred = loadActiveSemesterId()
+  const id = preferred && workspace.semesters.some((item) => item.semester.id === preferred)
+    ? preferred
+    : defaultSemesterId(workspace)
+  return workspace.semesters.find((item) => item.semester.id === id)
+}
+
+export function saveData(data: AppData): void {
+  saveWorkspace(createWorkspace(data))
+  saveActiveSemesterId(data.semester.id)
+}
+
+export function clearData(): void {
+  clearWorkspace()
 }
 
 function markInitialized(): void {
@@ -124,17 +165,28 @@ function saveSyncMetadata(metadata: LocalSyncMetadata): void {
   }
 }
 
-export function buildBackup(data: AppData): Backup {
+export function buildBackup(input: AppData | ScheduleWorkspace): Backup {
+  const workspace = isWorkspace(input) ? input : createWorkspace(input)
   return {
     formatVersion: BACKUP_FORMAT_VERSION,
     exportedAt: new Date().toISOString(),
-    // 撤销记录属于会话状态，不进备份。
-    data: { ...data, schemaVersion: SCHEMA_VERSION, lastBatch: undefined },
+    data: {
+      workspaceVersion: WORKSPACE_VERSION,
+      // 撤销记录属于会话状态，不进备份。
+      semesters: workspace.semesters.map((data) => ({
+        ...data,
+        schemaVersion: SCHEMA_VERSION,
+        lastBatch: undefined,
+      })),
+    },
   }
 }
 
-export function backupFileName(data: AppData): string {
-  const safeName = data.semester.name.replace(/[\\/:*?"<>|\s]+/g, '-')
+export function backupFileName(workspace: ScheduleWorkspace): string {
+  const label = workspace.semesters.length === 1
+    ? workspace.semesters[0].semester.name
+    : `全部-${workspace.semesters.length}-个学期`
+  const safeName = label.replace(/[\\/:*?"<>|\s]+/g, '-')
   const stamp = new Date().toISOString().slice(0, 10)
   return `课表备份-${safeName}-${stamp}.json`
 }

@@ -1,6 +1,7 @@
-import type { AppData, Backup, PeriodTime } from '../types'
-import { BACKUP_FORMAT_VERSION } from '../types'
+import type { AppData, Backup, PeriodTime, ScheduleWorkspace } from '../types'
+import { BACKUP_FORMAT_VERSION, WORKSPACE_VERSION } from '../types'
 import { migrateData } from './migrate'
+import { createWorkspace, migrateWorkspace } from './workspace'
 import { isValidDate, isValidTime, toMinutes } from '../core/datetime'
 import { MAX_TOTAL_WEEKS, MIN_TOTAL_WEEKS } from './defaults'
 
@@ -44,7 +45,7 @@ export interface ParseResult {
   /** 校验通过时的数据。 */
   backup?: Backup
   /** 摘要，用于恢复前展示（§5.6）。 */
-  summary?: { semesterName: string; courseCount: number; slotCount: number; changeCount: number }
+  summary?: { semesterName: string; semesterCount: number; courseCount: number; slotCount: number; changeCount: number }
   error?: string
 }
 
@@ -70,25 +71,62 @@ export function parseBackup(raw: string): ParseResult {
   }
 
   const data = parsed.data
-  const problem = validateData(data)
-  if (problem) return { ok: false, error: problem }
-
-  // 旧版本备份在这里升级成当前结构，字段缺失时补默认值。
-  const typed = migrateData(data as AppData)
+  let workspace: ScheduleWorkspace
+  if (version < 3) {
+    const problem = validateData(data)
+    if (problem) return { ok: false, error: problem }
+    // v1/v2 备份只有一个学期，恢复时自动包装成学期集合。
+    workspace = createWorkspace(migrateData(data as AppData))
+  } else {
+    const problem = validateWorkspace(data)
+    if (problem) return { ok: false, error: problem }
+    workspace = migrateWorkspace(data as ScheduleWorkspace)
+  }
+  const semesterNames = workspace.semesters.map((item) => item.semester.name)
   return {
     ok: true,
     backup: {
       formatVersion: version,
       exportedAt: typeof parsed.exportedAt === 'string' ? parsed.exportedAt : '',
-      data: typed,
+      data: workspace,
     },
     summary: {
-      semesterName: typed.semester.name,
-      courseCount: typed.courses.length,
-      slotCount: typed.slots.length,
-      changeCount: typed.changes.length + typed.oneOffs.length,
+      semesterName: semesterNames.length === 1 ? semesterNames[0] : semesterNames.join('、'),
+      semesterCount: workspace.semesters.length,
+      courseCount: workspace.semesters.reduce((total, item) => total + item.courses.length, 0),
+      slotCount: workspace.semesters.reduce((total, item) => total + item.slots.length, 0),
+      changeCount: workspace.semesters.reduce((total, item) => total + item.changes.length + item.oneOffs.length, 0),
     },
   }
+}
+
+/** 云端与本地持久化接受多学期容器；服务端同时兼容升级前的单学期数据。 */
+export function validateWorkspace(data: unknown): string | undefined {
+  if (!isObject(data)) return '缺少课表数据。'
+
+  // 旧客户端写入的单学期对象继续接受，由迁移层包装。
+  if (!Array.isArray(data.semesters)) return validateData(data)
+  if (
+    typeof data.workspaceVersion !== 'number' ||
+    !Number.isInteger(data.workspaceVersion) ||
+    data.workspaceVersion < 1 ||
+    data.workspaceVersion > WORKSPACE_VERSION
+  ) {
+    return '课表集合版本无法识别。'
+  }
+  if (data.semesters.length === 0) return '至少需要保留一个学期。'
+
+  const ids = new Set<string>()
+  for (let index = 0; index < data.semesters.length; index += 1) {
+    const semesterData = data.semesters[index]
+    const problem = validateData(semesterData)
+    if (problem) return `第 ${index + 1} 个学期数据有问题：${problem}`
+    const id = (semesterData as AppData).semester.id
+    if (!id || typeof id !== 'string') return `第 ${index + 1} 个学期缺少标识。`
+    if (ids.has(id)) return '存在重复的学期标识。'
+    ids.add(id)
+  }
+  return undefined
 }
 
 /** 返回错误描述；结构完整时返回 undefined。 */

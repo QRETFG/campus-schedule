@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Server } from 'node:http'
-import type { AppData } from '../src/types'
+import type { AppData, ScheduleWorkspace } from '../src/types'
 import type { ScheduleRepository, StoredSchedule } from '../server/scheduleStore'
 
 /**
@@ -65,7 +65,7 @@ function memoryScheduleStore(): ScheduleRepository {
     async read() {
       return structuredClone(current)
     },
-    async replace(data: AppData | null) {
+    async replace(data: AppData | ScheduleWorkspace | null) {
       current = {
         revision: current.revision + 1,
         updatedAt: new Date().toISOString(),
@@ -347,7 +347,7 @@ describe('跨设备共享课表', () => {
     expect(savedResponse.headers.get('etag')).toBe('"schedule-1"')
     const saved = await savedResponse.json()
     expect(saved.revision).toBe(1)
-    expect(saved.data.semester.name).toBe('设备 A 保存的学期')
+    expect(saved.data.semesters[0].semester.name).toBe('设备 A 保存的学期')
 
     const unchanged = await fetch(`${base}/api/schedule`, {
       headers: { 'If-None-Match': '"schedule-1"' },
@@ -364,6 +364,32 @@ describe('跨设备共享课表', () => {
     const cleared = await fetch(`${base}/api/schedule`, { method: 'DELETE' })
     expect(cleared.status).toBe(200)
     expect(await cleared.json()).toMatchObject({ revision: 2, data: null })
+  })
+
+  it('一次同步并读取多个相互独立的学期', async () => {
+    await startWith(BASE_ENV, memoryScheduleStore())
+    const first = (await import('./fixtures')).emptyData()
+    first.semester.id = 'semester-a'
+    first.courses.push({ id: 'course-a', name: '学期 A 的课程', colorIndex: 0 })
+    const second = (await import('./fixtures')).emptyData()
+    second.semester.id = 'semester-b'
+    second.semester.name = '第二学期'
+    second.courses.push({ id: 'course-b', name: '学期 B 的课程', colorIndex: 1 })
+
+    const response = await fetch(`${base}/api/schedule`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data: { workspaceVersion: 1, semesters: [first, second] } }),
+    })
+    expect(response.status).toBe(200)
+    const saved = await response.json()
+    expect(saved.data.semesters.map((item: AppData) => item.courses[0].name)).toEqual([
+      '学期 A 的课程',
+      '学期 B 的课程',
+    ])
+
+    const loaded = await (await fetch(`${base}/api/schedule`)).json()
+    expect(loaded.data.semesters).toHaveLength(2)
   })
 })
 

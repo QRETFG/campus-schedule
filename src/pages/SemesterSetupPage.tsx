@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { PeriodTime, Semester } from '../types'
 import { Banner, Button, Card, ConfirmDialog, Field, PageTitle, inputClass } from '../components/ui'
 import PeriodsEditor from '../components/PeriodsEditor'
@@ -9,6 +9,7 @@ import {
   MAX_TOTAL_WEEKS,
   MIN_TOTAL_WEEKS,
   createEmptyData,
+  newId,
   suggestSemesterName,
 } from '../store/defaults'
 import { validatePeriods } from '../store/validate'
@@ -17,20 +18,24 @@ import { analyzeConfigChange, trimWeeksToSemester } from '../core/impact'
 import type { ImpactItem } from '../core/impact'
 
 export default function SemesterSetupPage() {
-  const { data, commit } = useAppStore()
+  const { data, commit, addSemester } = useAppStore()
   const { today } = useClock()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const isFirstTime = !data
+  const isCreating = isFirstTime || searchParams.get('new') === '1'
+  const editingData = isCreating ? undefined : data
+  const [semesterId] = useState(() => isCreating ? newId('semester') : data!.semester.id)
 
-  const [name, setName] = useState(() => data?.semester.name ?? suggestSemesterName(today))
+  const [name, setName] = useState(() => editingData?.semester.name ?? suggestSemesterName(today))
   const [firstMonday, setFirstMonday] = useState(
-    () => data?.semester.firstWeekMonday ?? mondayOf(today),
+    () => editingData?.semester.firstWeekMonday ?? mondayOf(today),
   )
   const [totalWeeks, setTotalWeeks] = useState(
-    () => String(data?.semester.totalWeeks ?? DEFAULT_TOTAL_WEEKS),
+    () => String(editingData?.semester.totalWeeks ?? DEFAULT_TOTAL_WEEKS),
   )
   const [periods, setPeriods] = useState<PeriodTime[]>(
-    () => data?.periods.map((p) => ({ ...p })) ?? createEmptyData(today).periods,
+    () => (editingData?.periods ?? data?.periods)?.map((p) => ({ ...p })) ?? createEmptyData(today).periods,
   )
   const [showImpact, setShowImpact] = useState(false)
   const [afterCreate, setAfterCreate] = useState(false)
@@ -49,33 +54,33 @@ export default function SemesterSetupPage() {
   const periodErrors = useMemo(() => validatePeriods(periods), [periods])
 
   const nextSemester: Semester = {
-    id: data?.semester.id ?? 'semester',
+    id: semesterId,
     name: name.trim(),
     firstWeekMonday: firstMonday,
     totalWeeks: weeksNumber,
-    timezone: data?.semester.timezone ?? 'Asia/Shanghai',
+    timezone: editingData?.semester.timezone ?? data?.semester.timezone ?? 'Asia/Shanghai',
   }
 
   const formValid = !nameError && !dateError && !weeksError && periodErrors.length === 0
 
   // 修改已有学期设置时分析影响（§6.4）。
   const impact = useMemo(() => {
-    if (!data || !formValid) return undefined
-    return analyzeConfigChange(data, { semester: nextSemester, periods })
-  }, [data, formValid, nextSemester.name, nextSemester.firstWeekMonday, nextSemester.totalWeeks, periods])
+    if (!editingData || !formValid) return undefined
+    return analyzeConfigChange(editingData, { semester: nextSemester, periods })
+  }, [editingData, formValid, nextSemester.name, nextSemester.firstWeekMonday, nextSemester.totalWeeks, periods])
 
   const blocked = Boolean(impact?.blocking.length)
 
   const handleCreate = () => {
     const base = createEmptyData(today)
-    if (commit({ ...base, semester: nextSemester, periods })) {
+    if (addSemester({ ...base, semester: nextSemester, periods })) {
       setAfterCreate(true)
     }
   }
 
   const applyEdit = () => {
-    if (!data) return
-    const trimmed = trimWeeksToSemester(data, nextSemester.totalWeeks)
+    if (!editingData) return
+    const trimmed = trimWeeksToSemester(editingData, nextSemester.totalWeeks)
     commit({ ...trimmed, semester: nextSemester, periods })
     setShowImpact(false)
     navigate('/settings')
@@ -83,7 +88,7 @@ export default function SemesterSetupPage() {
 
   const handleSave = () => {
     if (!formValid || blocked) return
-    if (isFirstTime) {
+    if (isCreating) {
       handleCreate()
       return
     }
@@ -98,7 +103,7 @@ export default function SemesterSetupPage() {
     return (
       <div className="mx-auto max-w-lg py-6">
         <PageTitle hint="学期设置已保存。接下来可以上传课表截图，也可以直接手动添加课程。">
-          课表已创建
+          {isFirstTime ? '课表已创建' : '新学期已创建'}
         </PageTitle>
         <div className="space-y-3">
           <Button className="w-full" onClick={() => navigate('/import')}>
@@ -117,8 +122,8 @@ export default function SemesterSetupPage() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <PageTitle hint={isFirstTime ? '这些信息决定每周显示哪些课程，之后可以修改。' : undefined}>
-        {isFirstTime ? '设置学期' : '修改学期设置'}
+      <PageTitle hint={isCreating ? '每个学期的课程、作息和临时调整都会分开保存。' : undefined}>
+        {isFirstTime ? '设置学期' : isCreating ? '添加新学期' : '修改学期设置'}
       </PageTitle>
 
       <Card className="space-y-5">
@@ -206,7 +211,7 @@ export default function SemesterSetupPage() {
 
       <div className="mt-5 flex flex-wrap gap-2">
         <Button onClick={handleSave} disabled={!formValid || blocked}>
-          {isFirstTime ? '保存并继续' : '保存修改'}
+          {isCreating ? '保存并继续' : '保存修改'}
         </Button>
         {!isFirstTime ? (
           <Button variant="secondary" onClick={() => navigate('/settings')}>

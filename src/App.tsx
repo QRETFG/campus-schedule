@@ -1,10 +1,10 @@
-import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { AppStoreProvider, ClockProvider, useAppStore } from './store/AppStore'
 import { DraftProvider } from './store/DraftStore'
 import { ServiceStatusProvider } from './store/ServiceStatus'
 import { AiConfigProvider } from './store/AiConfig'
-import { Banner } from './components/ui'
+import { Banner, Button, inputClass } from './components/ui'
 import HomePage from './pages/HomePage'
 import OnboardingPage from './pages/OnboardingPage'
 import SemesterSetupPage from './pages/SemesterSetupPage'
@@ -26,8 +26,19 @@ const NAV = [
 ]
 
 function Shell({ children }: { children: ReactNode }) {
-  const { data, saveError, dismissSaveError, storageAvailable, sync, syncNow } = useAppStore()
+  const {
+    data,
+    workspace,
+    activeSemesterId,
+    switchSemester,
+    saveError,
+    dismissSaveError,
+    storageAvailable,
+    sync,
+    syncNow,
+  } = useAppStore()
   const location = useLocation()
+  const navigate = useNavigate()
   const showNav = Boolean(data) && location.pathname !== '/setup'
 
   return (
@@ -57,6 +68,29 @@ function Shell({ children }: { children: ReactNode }) {
       ) : null}
 
       <main className="mx-auto max-w-5xl px-4 py-5">
+        {showNav && workspace ? (
+          <section className="mb-4 flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm" aria-label="学期切换">
+            <label className="min-w-0 flex-1 text-xs font-medium text-slate-600">
+              当前学期
+              <select
+                className={`${inputClass} mt-1`}
+                value={activeSemesterId}
+                onChange={(event) => {
+                  if (switchSemester(event.target.value)) navigate('/')
+                }}
+              >
+                {workspace.semesters.map((item) => (
+                  <option key={item.semester.id} value={item.semester.id}>
+                    {item.semester.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button variant="secondary" onClick={() => navigate('/setup?new=1')}>
+              添加学期
+            </Button>
+          </section>
+        ) : null}
         {!storageAvailable ? (
           <div className="mb-4">
             <Banner tone="error" title="本浏览器无法保存课表">

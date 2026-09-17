@@ -2,9 +2,9 @@ import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { AppData } from '../src/types'
-import { migrateData } from '../src/store/migrate'
-import { validateData } from '../src/store/validate'
+import type { AppData, ScheduleWorkspace } from '../src/types'
+import { migrateWorkspace } from '../src/store/workspace'
+import { validateWorkspace } from '../src/store/validate'
 import type { AiExecutionMeta, ApiErrorCode, HealthResponse, OcrResponse, NoticeResponse, RuntimeMode } from '../src/shared/contract'
 import { ClientAiConfigSchema, NoticeRequestSchema, OcrRequestSchema } from '../src/shared/contract'
 import { AI_CONFIG_HEADERS } from '../src/shared/aiHeaders'
@@ -82,7 +82,7 @@ export function createApp(options: { scheduleStore?: ScheduleRepository } = {}) 
     res.json(record)
   }
 
-  /** 读取部署实例唯一的一份共享课表；revision=0 表示尚未初始化。 */
+  /** 读取部署实例唯一的一套多学期课表；revision=0 表示尚未初始化。 */
   app.get('/api/schedule', async (req, res) => {
     try {
       const record = await scheduleStore.read()
@@ -103,13 +103,13 @@ export function createApp(options: { scheduleStore?: ScheduleRepository } = {}) 
   /** 整份替换适合当前小型个人课表；写入采用原子文件替换。 */
   app.put('/api/schedule', async (req, res) => {
     const candidate = req.body?.data
-    const problem = validateData(candidate)
+    const problem = validateWorkspace(candidate)
     if (problem) {
       fail(res, 'invalid-request', `课表数据无法保存：${problem}`)
       return
     }
     try {
-      const record = await scheduleStore.replace(migrateData(candidate as AppData))
+      const record = await scheduleStore.replace(migrateWorkspace(candidate as AppData | ScheduleWorkspace))
       logEvent('schedule.saved', { revision: record.revision })
       sendSchedule(res, record)
     } catch (error) {

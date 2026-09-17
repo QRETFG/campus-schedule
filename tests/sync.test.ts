@@ -5,6 +5,7 @@ import path from 'node:path'
 import { JsonScheduleStore } from '../server/scheduleStore'
 import { readRemoteSchedule, writeRemoteSchedule } from '../src/store/remote'
 import { emptyData } from './fixtures'
+import { WORKSPACE_VERSION } from '../src/types'
 
 const temporaryDirectories: string[] = []
 
@@ -29,13 +30,21 @@ describe('轻量云端文件存储', () => {
 
     const changed = emptyData()
     changed.semester.name = '并发写入后的学期'
-    const [, concurrentSave] = await Promise.all([first.read(), first.replace(changed)])
+    const second = emptyData()
+    second.semester.id = 'second-semester'
+    second.semester.name = '第二学期'
+    const [, concurrentSave] = await Promise.all([
+      first.read(),
+      first.replace({ workspaceVersion: WORKSPACE_VERSION, semesters: [changed, second] }),
+    ])
     expect(concurrentSave.revision).toBe(2)
-    expect((await first.read()).data?.semester.name).toBe('并发写入后的学期')
+    expect((await first.read()).data?.semesters[0].semester.name).toBe('并发写入后的学期')
+    expect((await first.read()).data?.semesters[1].semester.name).toBe('第二学期')
 
     const restarted = new JsonScheduleStore(file)
     const loaded = await restarted.read()
-    expect(loaded.data?.semester.name).toBe('并发写入后的学期')
+    expect(loaded.data?.semesters[0].semester.name).toBe('并发写入后的学期')
+    expect(loaded.data?.semesters).toHaveLength(2)
     expect(loaded.revision).toBe(2)
 
     const cleared = await restarted.replace(null)

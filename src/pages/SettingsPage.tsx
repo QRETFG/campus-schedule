@@ -13,7 +13,17 @@ import type { AiPreferences } from '../store/AiConfig'
 import { useServiceStatus } from '../store/ServiceStatus'
 
 export default function SettingsPage() {
-  const { data, commit, storageAvailable, sync, syncNow } = useAppStore()
+  const {
+    data,
+    workspace,
+    activeSemesterId,
+    switchSemester,
+    removeSemester,
+    replaceWorkspace,
+    storageAvailable,
+    sync,
+    syncNow,
+  } = useAppStore()
   const { today } = useClock()
   const ai = useAiConfig()
   const service = useServiceStatus()
@@ -21,6 +31,7 @@ export default function SettingsPage() {
 
   const [candidate, setCandidate] = useState<ParseResult | undefined>()
   const [confirmRestore, setConfirmRestore] = useState(false)
+  const [deleteSemesterId, setDeleteSemesterId] = useState<string | undefined>()
   const [notice, setNotice] = useState<string | undefined>()
   const [aiForm, setAiForm] = useState<AiPreferences>(() => ai.preferences)
   const [apiKeyInput, setApiKeyInput] = useState('')
@@ -30,8 +41,9 @@ export default function SettingsPage() {
   const phase = semesterPhaseOf(semester, today)
 
   const exportBackup = () => {
-    const backup = buildBackup(data!)
-    downloadJson(backup, backupFileName(data!))
+    if (!workspace) return
+    const backup = buildBackup(workspace)
+    downloadJson(backup, backupFileName(workspace))
     setNotice('备份文件已开始下载。')
   }
 
@@ -49,11 +61,11 @@ export default function SettingsPage() {
 
   const restore = () => {
     if (!candidate?.ok || !candidate.backup) return
-    // 整份替换；失败时 commit 会在顶部给出未保存提示，数据不会半途写入。
-    commit(candidate.backup.data)
+    // 整套学期替换；失败时顶部会给出未保存提示，数据不会半途写入。
+    replaceWorkspace(candidate.backup.data)
     setCandidate(undefined)
     setConfirmRestore(false)
-    setNotice('已用备份文件替换当前课表。')
+    setNotice('已用备份文件替换全部学期。')
   }
 
   const saveAi = () => {
@@ -82,6 +94,48 @@ export default function SettingsPage() {
       <PageTitle>设置与备份</PageTitle>
 
       {notice ? <Banner tone="success">{notice}</Banner> : null}
+
+      <Card>
+        <h2 className="text-sm font-medium text-slate-800">学期管理</h2>
+        <p className="mt-2 text-xs leading-relaxed text-slate-600">
+          不同学期的课程、作息和临时调整分开保存；切换只影响当前设备正在展示的学期。
+        </p>
+        <div className="mt-3 space-y-2">
+          {workspace?.semesters.map((item) => {
+            const active = item.semester.id === activeSemesterId
+            return (
+              <div
+                key={item.semester.id}
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 ${active ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200'}`}
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-900">{item.semester.name}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {item.courses.length} 门课程 · {item.slots.length} 组安排{active ? ' · 当前展示' : ''}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  {!active ? (
+                    <Button variant="secondary" className="min-h-9 px-3" onClick={() => switchSemester(item.semester.id)}>
+                      切换
+                    </Button>
+                  ) : null}
+                  {(workspace?.semesters.length ?? 0) > 1 ? (
+                    <Button variant="ghost" className="min-h-9 px-3 text-rose-700" onClick={() => setDeleteSemesterId(item.semester.id)}>
+                      删除
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div className="mt-4">
+          <Link to="/setup?new=1">
+            <Button>添加新学期</Button>
+          </Link>
+        </div>
+      </Card>
 
       <Card>
         <h2 className="text-sm font-medium text-slate-800">智能服务</h2>
@@ -199,7 +253,7 @@ export default function SettingsPage() {
       </Card>
 
       <Card>
-        <h2 className="text-sm font-medium text-slate-800">学期信息</h2>
+        <h2 className="text-sm font-medium text-slate-800">当前学期信息</h2>
         <dl className="mt-3 space-y-1.5 text-sm">
           <Row label="学期名称" value={semester.name} />
           <Row label="第 1 教学周的周一" value={fullDateLabel(semester.firstWeekMonday)} />
@@ -247,7 +301,7 @@ export default function SettingsPage() {
           />
         </dl>
         <p className="mt-3 text-xs leading-relaxed text-slate-600">
-          课表会保存到此部署的云端存储，并在浏览器保留本机副本。其他设备打开同一地址后会自动读取最新内容。
+          全部学期会一起保存到此部署的云端存储，并在浏览器保留本机副本。其他设备打开同一地址后会自动读取最新内容。
           {!storageAvailable ? '当前浏览器无法保存本机副本，但云端同步仍会继续尝试。' : ''}
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
@@ -261,7 +315,7 @@ export default function SettingsPage() {
       <Card>
         <h2 className="text-sm font-medium text-slate-800">恢复备份</h2>
         <p className="mt-2 text-xs leading-relaxed text-slate-600">
-          恢复采用整份替换：备份文件中的学期、课程、上课安排和单次变更会替换当前课表。建议先导出当前数据。
+          恢复采用整份替换：备份文件中的全部学期、课程、上课安排和单次变更会替换当前全部数据。建议先导出当前数据。
         </p>
 
         <input
@@ -284,7 +338,7 @@ export default function SettingsPage() {
           <div className="mt-4">
             <Banner tone="error" title="这个备份文件无法恢复">
               <p>{candidate.error}</p>
-              <p className="mt-1 text-xs">当前课表没有任何改动。</p>
+              <p className="mt-1 text-xs">当前全部学期没有任何改动。</p>
             </Banner>
           </div>
         ) : null}
@@ -294,6 +348,7 @@ export default function SettingsPage() {
             <p className="text-sm font-medium text-slate-900">备份文件内容</p>
             <dl className="mt-2 space-y-1 text-sm">
               <Row label="学期" value={candidate.summary.semesterName} />
+              <Row label="学期数量" value={`${candidate.summary.semesterCount} 个`} />
               <Row label="课程数量" value={`${candidate.summary.courseCount} 门`} />
               <Row label="上课安排" value={`${candidate.summary.slotCount} 组`} />
               <Row label="变更与补课" value={`${candidate.summary.changeCount} 条`} />
@@ -302,7 +357,7 @@ export default function SettingsPage() {
               ) : null}
             </dl>
             <div className="mt-3 flex gap-2">
-              <Button onClick={() => setConfirmRestore(true)}>用这份备份替换当前课表</Button>
+              <Button onClick={() => setConfirmRestore(true)}>用这份备份替换全部学期</Button>
               <Button variant="secondary" onClick={() => setCandidate(undefined)}>
                 取消
               </Button>
@@ -327,17 +382,33 @@ export default function SettingsPage() {
 
       <ConfirmDialog
         open={confirmRestore}
-        title="确认替换当前课表？"
+        title="确认替换全部学期？"
         confirmLabel="替换"
         danger
         onConfirm={restore}
         onCancel={() => setConfirmRestore(false)}
       >
         <p>
-          当前的 {courses.length} 门课程、{slots.length} 组安排和 {changes.length + oneOffs.length} 条变更将被
-          备份文件中的内容整份替换，此操作不可撤销。
+          当前的 {workspace?.semesters.length ?? 0} 个学期将被备份文件中的内容整份替换，此操作不可撤销。
         </p>
         <p>如果还没导出当前数据，请先取消并导出备份。</p>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={Boolean(deleteSemesterId)}
+        title="确认删除这个学期？"
+        confirmLabel="删除学期"
+        danger
+        onConfirm={() => {
+          if (deleteSemesterId) removeSemester(deleteSemesterId)
+          setDeleteSemesterId(undefined)
+        }}
+        onCancel={() => setDeleteSemesterId(undefined)}
+      >
+        <p>
+          “{workspace?.semesters.find((item) => item.semester.id === deleteSemesterId)?.semester.name}”中的课程、上课安排和调课记录都会删除。
+        </p>
+        <p>删除会同步到其他设备，建议先导出完整备份。</p>
       </ConfirmDialog>
     </div>
   )

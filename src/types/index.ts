@@ -116,15 +116,27 @@ export interface AppData {
 export const SCHEMA_VERSION = 2
 
 /**
- * 备份格式版本。
- * 1 = 首版；2 = 增加 schemaVersion 与 lastBatch，1 可以直接升级读取。
+ * 一个部署实例中的全部学期。业务计算仍然只接收单个 AppData，避免不同
+ * 学期的课程、作息和临时调整互相串联。
  */
-export const BACKUP_FORMAT_VERSION = 2
+export interface ScheduleWorkspace {
+  workspaceVersion: number
+  semesters: AppData[]
+}
+
+export const WORKSPACE_VERSION = 1
+
+/**
+ * 备份格式版本。
+ * 1 = 首版；2 = 增加 schemaVersion 与 lastBatch；3 = 支持多个学期。
+ * 旧版本可以直接升级读取。
+ */
+export const BACKUP_FORMAT_VERSION = 3
 
 export interface Backup {
   formatVersion: number
   exportedAt: string
-  data: AppData
+  data: ScheduleWorkspace
 }
 
 /* ---------- 解算结果：某一天实际发生的课程 ---------- */

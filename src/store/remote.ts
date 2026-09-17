@@ -1,11 +1,11 @@
-import type { AppData } from '../types'
-import { migrateData } from './migrate'
-import { validateData } from './validate'
+import type { AppData, ScheduleWorkspace } from '../types'
+import { migrateWorkspace } from './workspace'
+import { validateWorkspace } from './validate'
 
 export interface RemoteScheduleRecord {
   revision: number
   updatedAt: string | null
-  data: AppData | null
+  data: ScheduleWorkspace | null
 }
 
 export type RemoteScheduleRead =
@@ -41,13 +41,13 @@ async function parseRecord(response: Response): Promise<RemoteScheduleRecord> {
     throw new ScheduleSyncError('云端同步服务返回了无法识别的更新时间。')
   }
   if (raw.data !== null) {
-    const problem = validateData(raw.data)
+    const problem = validateWorkspace(raw.data)
     if (problem) throw new ScheduleSyncError(`云端课表数据异常：${problem}`)
   }
   return {
     revision: Number(raw.revision),
     updatedAt: raw.updatedAt as string | null,
-    data: raw.data === null ? null : migrateData(raw.data as AppData),
+    data: raw.data === null ? null : migrateWorkspace(raw.data as AppData | ScheduleWorkspace),
   }
 }
 
@@ -68,7 +68,7 @@ export async function readRemoteSchedule(revision?: number): Promise<RemoteSched
 }
 
 /** data=null 表示把主动清空同步到其他设备。 */
-export async function writeRemoteSchedule(data: AppData | null): Promise<RemoteScheduleRecord> {
+export async function writeRemoteSchedule(data: AppData | ScheduleWorkspace | null): Promise<RemoteScheduleRecord> {
   const response = await fetch('/api/schedule', data === null
     ? { method: 'DELETE' }
     : {

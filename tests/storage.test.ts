@@ -4,11 +4,15 @@ import { createInitialAppData } from '../src/store/seed'
 import {
   clearData,
   loadData,
+  loadWorkspace,
   loadSyncMetadata,
   markSyncComplete,
   markSyncPending,
   saveData,
+  saveActiveSemesterId,
+  saveWorkspace,
 } from '../src/store/storage'
+import { WORKSPACE_VERSION } from '../src/types'
 import { validateData } from '../src/store/validate'
 import { emptyData } from './fixtures'
 
@@ -41,6 +45,22 @@ describe('首次访问默认课表', () => {
     saveData(existing)
     expect(loadData()?.semester.firstWeekMonday).toBe(existing.semester.firstWeekMonday)
     expect(loadData()?.courses).toHaveLength(0)
+  })
+
+  it('保存多个学期并记住当前设备选择的学期', () => {
+    const first = emptyData()
+    first.semester.id = 'first'
+    const second = emptyData()
+    second.semester.id = 'second'
+    second.semester.name = '第二学期'
+    second.courses.push({ id: 'second-course', name: '只属于第二学期', colorIndex: 0 })
+
+    saveWorkspace({ workspaceVersion: WORKSPACE_VERSION, semesters: [first, second] })
+    saveActiveSemesterId('second')
+
+    expect(loadWorkspace()?.semesters).toHaveLength(2)
+    expect(loadData()?.semester.id).toBe('second')
+    expect(loadData()?.courses[0].name).toBe('只属于第二学期')
   })
 
   it('每次创建的默认课表都是独立副本', () => {

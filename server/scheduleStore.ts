@@ -1,18 +1,18 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { AppData } from '../src/types'
-import { migrateData } from '../src/store/migrate'
-import { validateData } from '../src/store/validate'
+import type { AppData, ScheduleWorkspace } from '../src/types'
+import { migrateWorkspace } from '../src/store/workspace'
+import { validateWorkspace } from '../src/store/validate'
 
 export interface StoredSchedule {
   revision: number
   updatedAt: string | null
-  data: AppData | null
+  data: ScheduleWorkspace | null
 }
 
 export interface ScheduleRepository {
   read(): Promise<StoredSchedule>
-  replace(data: AppData | null): Promise<StoredSchedule>
+  replace(data: AppData | ScheduleWorkspace | null): Promise<StoredSchedule>
 }
 
 const EMPTY_SCHEDULE: StoredSchedule = { revision: 0, updatedAt: null, data: null }
@@ -39,14 +39,14 @@ export class JsonScheduleStore implements ScheduleRepository {
     return cloneRecord(this.current)
   }
 
-  async replace(data: AppData | null): Promise<StoredSchedule> {
+  async replace(data: AppData | ScheduleWorkspace | null): Promise<StoredSchedule> {
     let result: StoredSchedule | undefined
     const operation = this.queue.then(async () => {
       await this.loadOnce()
       const next: StoredSchedule = {
         revision: this.current.revision + 1,
         updatedAt: new Date().toISOString(),
-        data: data ? migrateData(data) : null,
+        data: data ? migrateWorkspace(data) : null,
       }
       await this.writeAtomically(next)
       this.current = next
@@ -80,13 +80,13 @@ export class JsonScheduleStore implements ScheduleRepository {
         throw new Error('云端课表更新时间无效')
       }
       if (parsed.data !== null) {
-        const problem = validateData(parsed.data)
+        const problem = validateWorkspace(parsed.data)
         if (problem) throw new Error(`云端课表数据损坏：${problem}`)
       }
       this.current = {
         revision: Number(parsed.revision),
         updatedAt: parsed.updatedAt,
-        data: parsed.data ? migrateData(parsed.data) : null,
+        data: parsed.data ? migrateWorkspace(parsed.data as AppData | ScheduleWorkspace) : null,
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
