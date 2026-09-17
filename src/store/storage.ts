@@ -6,6 +6,12 @@ import { createInitialAppData } from './seed'
 
 const STORAGE_KEY = 'smart-schedule.v1'
 const INITIALIZED_KEY = 'smart-schedule.initialized.v1'
+const SYNC_META_KEY = 'smart-schedule.sync.v1'
+
+export interface LocalSyncMetadata {
+  revision?: number
+  pending: boolean
+}
 
 export class StorageError extends Error {}
 
@@ -82,6 +88,39 @@ export function isStorageAvailable(): boolean {
     return true
   } catch {
     return false
+  }
+}
+
+/** 保存同步游标与离线待上传标记，避免页面刷新后丢掉尚未上传的修改。 */
+export function loadSyncMetadata(): LocalSyncMetadata {
+  try {
+    const raw = window.localStorage.getItem(SYNC_META_KEY)
+    if (!raw) return { pending: false }
+    const parsed = JSON.parse(raw) as Partial<LocalSyncMetadata>
+    return {
+      revision: Number.isInteger(parsed.revision) && Number(parsed.revision) >= 0
+        ? Number(parsed.revision)
+        : undefined,
+      pending: parsed.pending === true,
+    }
+  } catch {
+    return { pending: false }
+  }
+}
+
+export function markSyncPending(revision?: number): void {
+  saveSyncMetadata({ revision, pending: true })
+}
+
+export function markSyncComplete(revision: number): void {
+  saveSyncMetadata({ revision, pending: false })
+}
+
+function saveSyncMetadata(metadata: LocalSyncMetadata): void {
+  try {
+    window.localStorage.setItem(SYNC_META_KEY, JSON.stringify(metadata))
+  } catch {
+    // 同步仍可在当前页面内继续；这里只是跨刷新恢复所需的辅助游标。
   }
 }
 

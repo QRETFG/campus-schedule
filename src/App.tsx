@@ -26,7 +26,7 @@ const NAV = [
 ]
 
 function Shell({ children }: { children: ReactNode }) {
-  const { data, saveError, dismissSaveError, storageAvailable } = useAppStore()
+  const { data, saveError, dismissSaveError, storageAvailable, sync, syncNow } = useAppStore()
   const location = useLocation()
   const showNav = Boolean(data) && location.pathname !== '/setup'
 
@@ -80,6 +80,25 @@ function Shell({ children }: { children: ReactNode }) {
               }
             >
               {saveError}
+            </Banner>
+          </div>
+        ) : null}
+        {sync.state === 'offline' ? (
+          <div className="mb-4">
+            <Banner
+              tone="warning"
+              title="云端同步暂不可用"
+              action={
+                <button
+                  type="button"
+                  onClick={syncNow}
+                  className="shrink-0 rounded px-2 py-1 text-xs font-medium underline"
+                >
+                  立即重试
+                </button>
+              }
+            >
+              {sync.error ?? '当前仍可使用本机副本；恢复连接后会自动重试。'}
             </Banner>
           </div>
         ) : null}

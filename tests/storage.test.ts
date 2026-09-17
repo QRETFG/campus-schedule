@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createInitialAppData } from '../src/store/seed'
-import { clearData, loadData, saveData } from '../src/store/storage'
+import {
+  clearData,
+  loadData,
+  loadSyncMetadata,
+  markSyncComplete,
+  markSyncPending,
+  saveData,
+} from '../src/store/storage'
 import { validateData } from '../src/store/validate'
 import { emptyData } from './fixtures'
 
@@ -40,5 +47,13 @@ describe('首次访问默认课表', () => {
     const first = createInitialAppData()
     first.courses[0].name = '已修改'
     expect(createInitialAppData().courses[0].name).toBe('CSIT882 Data Management Systems')
+  })
+
+  it('保存离线待同步标记和最后同步版本', () => {
+    expect(loadSyncMetadata()).toEqual({ pending: false })
+    markSyncPending(4)
+    expect(loadSyncMetadata()).toEqual({ revision: 4, pending: true })
+    markSyncComplete(5)
+    expect(loadSyncMetadata()).toEqual({ revision: 5, pending: false })
   })
 })

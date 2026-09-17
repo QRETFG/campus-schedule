@@ -63,6 +63,8 @@ export const config = {
 
   /** 生产构建产物目录；存在时由本服务一并托管。 */
   staticDir: process.env.SCHEDULE_STATIC_DIR?.trim() || 'dist',
+  /** 跨设备共享课表的持久化文件。Docker 中应放在命名卷内。 */
+  scheduleDataFile: process.env.SCHEDULE_DATA_FILE?.trim() || '.data/schedule.json',
 } as const
 
 export function resolveMode(): RuntimeMode {

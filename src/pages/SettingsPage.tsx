@@ -13,7 +13,7 @@ import type { AiPreferences } from '../store/AiConfig'
 import { useServiceStatus } from '../store/ServiceStatus'
 
 export default function SettingsPage() {
-  const { data, commit, storageAvailable } = useAppStore()
+  const { data, commit, storageAvailable, sync, syncNow } = useAppStore()
   const { today } = useClock()
   const ai = useAiConfig()
   const service = useServiceStatus()
@@ -231,13 +231,30 @@ export default function SettingsPage() {
           <Row label="重复上课安排" value={`${slots.length} 组`} />
           <Row label="单次调整" value={`${changes.length} 条`} />
           <Row label="一次性补课" value={`${oneOffs.length} 次`} />
+          <Row
+            label="云端同步"
+            value={
+              sync.state === 'synced'
+                ? sync.lastSyncedAt
+                  ? `已同步 · ${new Date(sync.lastSyncedAt).toLocaleString('zh-CN')}`
+                  : '已同步'
+                : sync.state === 'saving'
+                  ? '正在保存…'
+                  : sync.state === 'connecting'
+                    ? '正在连接…'
+                    : '等待重试'
+            }
+          />
         </dl>
         <p className="mt-3 text-xs leading-relaxed text-slate-600">
-          课表保存在此浏览器，清理网站数据可能导致丢失。换浏览器或换设备前，请先导出备份。
-          {!storageAvailable ? '当前浏览器无法写入本地存储，刷新后数据会丢失。' : ''}
+          课表会保存到此部署的云端存储，并在浏览器保留本机副本。其他设备打开同一地址后会自动读取最新内容。
+          {!storageAvailable ? '当前浏览器无法保存本机副本，但云端同步仍会继续尝试。' : ''}
         </p>
-        <div className="mt-4">
+        <div className="mt-4 flex flex-wrap gap-2">
           <Button onClick={exportBackup}>导出备份文件</Button>
+          <Button variant="secondary" onClick={syncNow} disabled={sync.state === 'connecting' || sync.state === 'saving'}>
+            立即同步
+          </Button>
         </div>
       </Card>
 

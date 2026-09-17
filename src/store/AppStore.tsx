@@ -2,7 +2,25 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react'
 import type { AppData, DateStr, TimeStr } from '../types'
 import { TIMEZONE, clockIn, todayIn } from '../core/datetime'
-import { StorageError, clearData, isStorageAvailable, loadData, saveData } from './storage'
+import {
+  StorageError,
+  clearData,
+  isStorageAvailable,
+  loadData,
+  loadSyncMetadata,
+  markSyncComplete,
+  markSyncPending,
+  saveData,
+} from './storage'
+import { ScheduleSyncError, readRemoteSchedule, writeRemoteSchedule } from './remote'
+
+export type ScheduleSyncState = 'connecting' | 'saving' | 'synced' | 'offline'
+
+export interface ScheduleSyncInfo {
+  state: ScheduleSyncState
+  lastSyncedAt?: string
+  error?: string
+}
 
 interface AppStoreValue {
   /** undefined 表示本浏览器尚未创建课表。 */
@@ -10,6 +28,9 @@ interface AppStoreValue {
   storageAvailable: boolean
   /** 最近一次保存失败的信息；非空时页面必须提示未保存。 */
   saveError?: string
+  /** 当前设备与部署实例共享课表的同步状态。 */
+  sync: ScheduleSyncInfo
+  syncNow: () => void
   /** 写入并持久化；返回是否成功。失败时内存中的数据仍然更新，避免用户丢失正在编辑的内容。 */
   commit: (next: AppData) => boolean
   update: (fn: (current: AppData) => AppData) => boolean
@@ -22,10 +43,107 @@ const AppStoreContext = createContext<AppStoreValue | undefined>(undefined)
 export function AppStoreProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<AppData | undefined>(() => loadData())
   const [saveError, setSaveError] = useState<string | undefined>()
+  const [sync, setSync] = useState<ScheduleSyncInfo>({ state: 'connecting' })
+  const [initialSyncMetadata] = useState(loadSyncMetadata)
   const storageAvailable = useMemo(() => isStorageAvailable(), [])
 
+  const dataRef = useRef(data)
+  dataRef.current = data
+  const revisionRef = useRef<number | undefined>(initialSyncMetadata.revision)
+  const pendingRef = useRef<{ data: AppData | null } | undefined>(
+    initialSyncMetadata.pending ? { data: data ?? null } : undefined,
+  )
+  const inFlightRef = useRef<Promise<void> | undefined>()
+
+  const applyRemote = useCallback((next: AppData | null) => {
+    dataRef.current = next ?? undefined
+    setData(next ?? undefined)
+    try {
+      if (next) saveData(next)
+      else clearData()
+      setSaveError(undefined)
+    } catch (error) {
+      setSaveError(error instanceof StorageError ? error.message : '云端课表已读取，但无法保存本机副本。')
+    }
+  }, [])
+
+  const synchronize = useCallback((): Promise<void> => {
+    if (inFlightRef.current) return inFlightRef.current
+    let completed = false
+
+    const operation = (async () => {
+      try {
+        while (true) {
+          const pending = pendingRef.current
+          if (pending) {
+            setSync((current) => ({ ...current, state: 'saving', error: undefined }))
+            const saved = await writeRemoteSchedule(pending.data)
+            revisionRef.current = saved.revision
+            if (pendingRef.current === pending) pendingRef.current = undefined
+            markSyncComplete(saved.revision)
+            setSync({ state: 'synced', lastSyncedAt: saved.updatedAt ?? undefined })
+            // 保存期间又有新修改时，继续按产生顺序保存最新快照。
+            if (pendingRef.current) continue
+            completed = true
+            return
+          }
+
+          const result = await readRemoteSchedule(revisionRef.current)
+          if (result.kind === 'not-modified') {
+            if (revisionRef.current !== undefined) markSyncComplete(revisionRef.current)
+            setSync((current) => ({ ...current, state: 'synced', error: undefined }))
+            completed = true
+            return
+          }
+
+          // 拉取期间发生了本机修改时，本机待保存内容优先进入下一轮。
+          if (pendingRef.current) continue
+          const remote = result.record
+          revisionRef.current = remote.revision
+
+          if (remote.revision === 0) {
+            // 全新服务器以当前设备的本地课表完成首次初始化。
+            const local = dataRef.current
+            if (local) {
+              pendingRef.current = { data: local }
+              continue
+            }
+          } else {
+            applyRemote(remote.data)
+            markSyncComplete(remote.revision)
+          }
+
+          setSync({ state: 'synced', lastSyncedAt: remote.updatedAt ?? undefined })
+          completed = true
+          return
+        }
+      } catch (error) {
+        setSync((current) => ({
+          ...current,
+          state: 'offline',
+          error: error instanceof ScheduleSyncError ? error.message : '无法连接云端同步服务，本机修改将在稍后重试。',
+        }))
+      }
+    })()
+
+    inFlightRef.current = operation.finally(() => {
+      inFlightRef.current = undefined
+      // 极小概率下修改恰好发生在同步循环退出时，补发一次而不等待轮询。
+      if (completed && pendingRef.current) window.setTimeout(() => void synchronize(), 0)
+    })
+    return inFlightRef.current
+  }, [applyRemote])
+
+  const queueRemoteWrite = useCallback((next: AppData | null) => {
+    pendingRef.current = { data: next }
+    markSyncPending(revisionRef.current)
+    void synchronize()
+  }, [synchronize])
+
   const commit = useCallback((next: AppData) => {
+    dataRef.current = next
     setData(next)
+    queueRemoteWrite(next)
     try {
       saveData(next)
       setSaveError(undefined)
@@ -34,10 +152,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       setSaveError(error instanceof StorageError ? error.message : '保存失败，课表未写入本浏览器。')
       return false
     }
-  }, [])
-
-  const dataRef = useRef(data)
-  dataRef.current = data
+  }, [queueRemoteWrite])
 
   const update = useCallback(
     (fn: (current: AppData) => AppData) => {
@@ -50,21 +165,41 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const reset = useCallback(() => {
     clearData()
+    dataRef.current = undefined
     setData(undefined)
     setSaveError(undefined)
-  }, [])
+    queueRemoteWrite(null)
+  }, [queueRemoteWrite])
+
+  useEffect(() => {
+    void synchronize()
+    const timer = window.setInterval(() => void synchronize(), 30_000)
+    const onFocus = () => void synchronize()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void synchronize()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [synchronize])
 
   const value = useMemo<AppStoreValue>(
     () => ({
       data,
       storageAvailable,
       saveError,
+      sync,
+      syncNow: () => void synchronize(),
       commit,
       update,
       reset,
       dismissSaveError: () => setSaveError(undefined),
     }),
-    [data, storageAvailable, saveError, commit, update, reset],
+    [data, storageAvailable, saveError, sync, synchronize, commit, update, reset],
   )
 
   return <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>

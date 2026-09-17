@@ -2,6 +2,9 @@ import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
+import type { AppData } from '../src/types'
+import { migrateData } from '../src/store/migrate'
+import { validateData } from '../src/store/validate'
 import type { AiExecutionMeta, ApiErrorCode, HealthResponse, OcrResponse, NoticeResponse, RuntimeMode } from '../src/shared/contract'
 import { ClientAiConfigSchema, NoticeRequestSchema, OcrRequestSchema } from '../src/shared/contract'
 import { AI_CONFIG_HEADERS } from '../src/shared/aiHeaders'
@@ -18,14 +21,17 @@ import { DEMO_TIMETABLE, demoNotice } from './demo'
 import { UpstreamError, extractNotice, extractTimetable } from './extract'
 import { describeError, logEvent } from './log'
 import { ConcurrencyGate, clientKey, takeToken } from './rateLimit'
+import { JsonScheduleStore } from './scheduleStore'
+import type { ScheduleRepository, StoredSchedule } from './scheduleStore'
 
-export function createApp() {
+export function createApp(options: { scheduleStore?: ScheduleRepository } = {}) {
   const app = express()
   app.set('trust proxy', true)
   // base64 会把 10 MB 图片撑到约 13.4 MB，留出余量后仍有硬上限。
   app.use(express.json({ limit: Math.ceil((config.maxImageBytes * 4) / 3) + 256 * 1024 }))
 
   const gate = new ConcurrencyGate(config.maxConcurrentUpstream)
+  const scheduleStore = options.scheduleStore ?? new JsonScheduleStore(config.scheduleDataFile)
 
   const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
     unconfigured: 503,
@@ -64,6 +70,64 @@ export function createApp() {
       },
     }
     res.json(body)
+  })
+
+  function scheduleEtag(record: StoredSchedule): string {
+    return `"schedule-${record.revision}"`
+  }
+
+  function sendSchedule(res: Response, record: StoredSchedule): void {
+    res.setHeader('Cache-Control', 'no-store')
+    res.setHeader('ETag', scheduleEtag(record))
+    res.json(record)
+  }
+
+  /** 读取部署实例唯一的一份共享课表；revision=0 表示尚未初始化。 */
+  app.get('/api/schedule', async (req, res) => {
+    try {
+      const record = await scheduleStore.read()
+      const etag = scheduleEtag(record)
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('ETag', etag)
+      if (req.get('If-None-Match') === etag) {
+        res.status(304).end()
+        return
+      }
+      res.json(record)
+    } catch (error) {
+      logEvent('schedule.read-fail', describeError(error))
+      fail(res, 'internal', '无法读取云端课表，请稍后重试。')
+    }
+  })
+
+  /** 整份替换适合当前小型个人课表；写入采用原子文件替换。 */
+  app.put('/api/schedule', async (req, res) => {
+    const candidate = req.body?.data
+    const problem = validateData(candidate)
+    if (problem) {
+      fail(res, 'invalid-request', `课表数据无法保存：${problem}`)
+      return
+    }
+    try {
+      const record = await scheduleStore.replace(migrateData(candidate as AppData))
+      logEvent('schedule.saved', { revision: record.revision })
+      sendSchedule(res, record)
+    } catch (error) {
+      logEvent('schedule.write-fail', describeError(error))
+      fail(res, 'internal', '无法保存云端课表，本机副本不受影响。')
+    }
+  })
+
+  /** 主动清空也同步到其他设备；持久化空记录可防止旧设备重新初始化。 */
+  app.delete('/api/schedule', async (_req, res) => {
+    try {
+      const record = await scheduleStore.replace(null)
+      logEvent('schedule.cleared', { revision: record.revision })
+      sendSchedule(res, record)
+    } catch (error) {
+      logEvent('schedule.write-fail', describeError(error))
+      fail(res, 'internal', '无法清空云端课表，本机副本不受影响。')
+    }
   })
 
   /**

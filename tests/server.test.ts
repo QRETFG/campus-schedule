@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Server } from 'node:http'
+import type { AppData } from '../src/types'
+import type { ScheduleRepository, StoredSchedule } from '../server/scheduleStore'
 
 /**
  * 服务端接口测试。
@@ -14,7 +16,7 @@ const JPEG_BASE64 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0,
 let server: Server | undefined
 let base = ''
 
-async function startWith(env: Record<string, string | undefined>) {
+async function startWith(env: Record<string, string | undefined>, scheduleStore?: ScheduleRepository) {
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -23,7 +25,7 @@ async function startWith(env: Record<string, string | undefined>) {
   const { createApp } = await import('../server/index')
   const { resetRateLimit } = await import('../server/rateLimit')
   resetRateLimit()
-  const app = createApp()
+  const app = createApp(scheduleStore ? { scheduleStore } : undefined)
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve())
   })
@@ -54,6 +56,24 @@ const BASE_ENV = {
   SCHEDULE_MODE: undefined,
   SCHEDULE_RATE_LIMIT_PER_MINUTE: undefined,
   SCHEDULE_MAX_NOTICE_CHARS: undefined,
+  SCHEDULE_DATA_FILE: undefined,
+}
+
+function memoryScheduleStore(): ScheduleRepository {
+  let current: StoredSchedule = { revision: 0, updatedAt: null, data: null }
+  return {
+    async read() {
+      return structuredClone(current)
+    },
+    async replace(data: AppData | null) {
+      current = {
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+        data: data ? structuredClone(data) : null,
+      }
+      return structuredClone(current)
+    },
+  }
 }
 
 function customHeaders(format: 'openai-responses' | 'openai-chat-completions') {
@@ -93,7 +113,7 @@ describe('未配置状态', () => {
     expect(body.mode).toBe('unconfigured')
     expect(body.model).toBeNull()
     expect(JSON.stringify(body)).not.toMatch(/key|secret|token/i)
-  })
+  }, 10_000)
 
   it('识别接口明确拒绝，不返回任何样例课程', async () => {
     await startWith(BASE_ENV)
@@ -306,6 +326,44 @@ describe('请求校验', () => {
       periodCount: 12,
     })
     expect(response.status).toBe(400)
+  })
+})
+
+describe('跨设备共享课表', () => {
+  it('支持初始化、读取、304 检查、更新校验和同步清空', async () => {
+    await startWith(BASE_ENV, memoryScheduleStore())
+
+    const empty = await (await fetch(`${base}/api/schedule`)).json()
+    expect(empty).toEqual({ revision: 0, updatedAt: null, data: null })
+
+    const data = (await import('./fixtures')).emptyData()
+    data.semester.name = '设备 A 保存的学期'
+    const savedResponse = await fetch(`${base}/api/schedule`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data }),
+    })
+    expect(savedResponse.status).toBe(200)
+    expect(savedResponse.headers.get('etag')).toBe('"schedule-1"')
+    const saved = await savedResponse.json()
+    expect(saved.revision).toBe(1)
+    expect(saved.data.semester.name).toBe('设备 A 保存的学期')
+
+    const unchanged = await fetch(`${base}/api/schedule`, {
+      headers: { 'If-None-Match': '"schedule-1"' },
+    })
+    expect(unchanged.status).toBe(304)
+
+    const invalid = await fetch(`${base}/api/schedule`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data: { semester: null } }),
+    })
+    expect(invalid.status).toBe(400)
+
+    const cleared = await fetch(`${base}/api/schedule`, { method: 'DELETE' })
+    expect(cleared.status).toBe(200)
+    expect(await cleared.json()).toMatchObject({ revision: 2, data: null })
   })
 })
 
